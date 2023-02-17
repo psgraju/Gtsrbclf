@@ -1,0 +1,196 @@
+conda create -n gtsrb
+
+conda activate gtsrb
+
+conda install tensorflow-gpu
+
+conda install jupyter notebook 
+conda install ipykernel
+conda install scikit-learn
+conda install -c conda-forge opencv
+conda install -c conda-forge keras-tuner
+
+
+
+
+
+
+
+import tensorflow as tf 
+
+
+tf.config.list_physical_devices('GPU')
+
+
+
+from tensorflow.python.client import device_lib
+print(device_lib.list_local_devices())
+
+
+
+
+
+import numpy as np 
+import pandas as pd # data processing, 
+import math
+import h5py
+import matplotlib.pyplot as plt
+from matplotlib.pyplot import imread
+import scipy
+import cv2
+from PIL import Image
+import pandas as pd
+import tensorflow as tf
+import tensorflow.keras.layers as tfl
+from tensorflow.python.framework import ops
+
+
+
+
+device_name = tf.test.gpu_device_name()
+if "GPU" not in device_name:
+    print("GPU device not found")
+print('Found GPU at: {}'.format(device_name))
+
+
+
+import os
+# for dirname, _, filenames in os.walk('/home/satya/Gtsrb_clf/gtsrb/data/'):
+#     for filename in filenames:
+#         print(os.path.join(dirname, filename))
+data_dir = '/home/satya/Gtsrb_clf/gtsrb/data/'
+train_path = '/home/satya/Gtsrb_clf/gtsrb/data/Train'
+test_path = '/home/satya/Gtsrb_clf/gtsrb/data/Test'
+
+
+folders = os.listdir(train_path)
+
+
+# Visualization for distribution of classes 
+samples_dict = {} 
+
+for folder in folders:
+    images_in_folder = os.listdir(train_path + '/' + folder)
+    samples_dict[folder] = len(images_in_folder)
+    
+plt.figure(figsize=(21,10))  
+plt.bar(*zip(*samples_dict.items()))
+
+
+
+image_data = []
+image_labels = []
+class_num = len(os.listdir(train_path))
+for i in range(class_num):
+    path = train_path +'/'+ str(i)
+    images = os.listdir(path)
+
+    for img in images:
+        try:
+            #print(path+'/'+img)
+            image = cv2.imread(path + '/' + img)
+            image_fromarray = Image.fromarray(image, 'RGB')
+            resize_image = image_fromarray.resize((30, 30))
+            image_data.append(np.array(resize_image))
+            image_labels.append(i)
+        except:
+            print("Error in " + img)
+
+image_data = np.array(image_data)
+image_labels = np.array(image_labels)
+print(image_data.shape, image_labels.shape)
+
+
+
+
+from sklearn.model_selection import train_test_split
+from tensorflow.keras.utils import to_categorical
+
+X_train, X_val, y_train, y_val = train_test_split(image_data, image_labels, test_size=0.2, random_state=42, shuffle=True)
+X_train = X_train/255 
+X_val = X_val/255
+
+y_train = to_categorical(y_train, class_num)
+y_val = to_categorical(y_val, class_num)
+
+print("X_train.shape", X_train.shape)
+print("X_valid.shape", X_val.shape)
+print("y_train.shape", y_train.shape)
+print("y_valid.shape", y_val.shape)
+
+
+
+
+import keras_tuner as kt
+from tensorflow.keras.optimizers import Adam
+from keras_tuner.engine.hyperparameters import HyperParameters
+hp = HyperParameters()
+
+class Model(kt.HyperModel):
+    def build(self, hp):
+        model = tf.keras.Sequential([
+        tfl.Conv2D(
+            filters=hp.Int('conv_1_filter', min_value=8, max_value=32, step=8), 
+            kernel_size=hp.Choice('conv_1_kernel', values = [3,5]), 
+            activation='relu',
+            padding='same',
+            input_shape=(X_train.shape[1:])),
+        tfl.MaxPool2D(pool_size=hp.Choice('conv_1_pool', values = [2,4])),
+        
+        tfl.Conv2D(filters=hp.Int('conv_2_filter', min_value=32, max_value=64, step=16), 
+                   kernel_size=hp.Choice('conv_1_kernel', values = [3,5]), 
+                   activation='relu',
+                   padding='same'),
+    #after a Conv2D layer with data_format="channels_first", set axis=1 in BatchNormalization.
+    #after a Conv2D layer with data_format="channels_last", set axis=-1 in BatchNormalization.
+        tfl.BatchNormalization(axis=-1),
+        tfl.Dropout(rate=hp.Float('layer1_drop',min_value=0.0, max_value=0.5)),
+        
+    
+        tfl.Conv2D(filters=hp.Int('conv_3_filter', min_value=64, max_value=128, step=32), 
+                   kernel_size=hp.Choice('conv_1_kernel', values = [3,5]), 
+                   activation='relu',
+                   padding='same'),
+        tfl.MaxPool2D(pool_size=hp.Choice('conv_3_pool', values = [2,4])),
+        tfl.Conv2D(filters=hp.Int('conv_4_filter', min_value=128, max_value=512, step=64), 
+                   kernel_size=hp.Choice('conv_4_kernel', values = [3,5]), 
+                   activation='relu',
+                   padding='same'),
+        tfl.BatchNormalization(axis=-1),
+        tfl.Dropout(rate=hp.Float('layer2_drop',min_value=0.0, max_value=0.5)),
+    
+        tfl.Flatten(),
+        tfl.Dense(512,activation='relu'),
+        tfl.BatchNormalization(),
+        tfl.Dropout(rate=hp.Float('layer2_drop',min_value=0.0, max_value=0.5)),
+    
+        tfl.Dense(class_num, activation='softmax')
+        
+        ])
+    
+        model.compile(optimizer=Adam(hp.Choice('learning_rate', values=[1e-2, 1e-3])),
+              loss='categorical_crossentropy',
+              metrics=['accuracy'])
+        return model
+    # The *args and **kwargs are the ones you passed from tuner.search()
+    def fit(self, hp, model, *args, **kwargs):
+        return model.fit(
+            *args,
+            batch_size=hp.Choice("batch_size", [16, 32]),
+            **kwargs,
+        )
+
+tuner_random = kt.Hyperband(
+    Model(),
+    objective="val_accuracy")
+# Using early stopping during training via passing in the tf.keras.callbacks.EarlyStopping callback. 
+# This can be configured to stop your training as soon as the validation loss stops improving
+# # Will stop training if the "val_loss" hasn't improved in 3 epochs.
+tuner_random.search(X_train,y_train,epochs=30,validation_data=(X_val,y_val), callbacks=[tf.keras.callbacks.EarlyStopping("val_loss", patience=3)])
+
+
+
+
+
+
+
